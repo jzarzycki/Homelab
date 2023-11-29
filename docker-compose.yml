@@ -1,0 +1,258 @@
+version: '3'
+services:
+
+  # Ouroboros: Automatically update running Docker containers to the latest available image
+  # https://github.com/pyouroboros/ouroboros
+  ouroboros:
+    container_name: ouroboros
+    hostname: ouroboros
+    image: pyouroboros/ouroboros
+    environment:
+      - CLEANUP=true
+      - INTERVAL=300
+      - LOG_LEVEL=info
+      - SELF_UPDATE=true
+      - IGNORE=mariadb
+      - TZ=${TZ}
+    restart:
+      unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  # NGINX: Advanced Load Balancer, Web Server, & Reverse Proxy
+  # https://docs.nginx.com/
+  nginx:
+    container_name: nginx
+    hostname: nginx
+    image: nginx
+    restart: unless-stopped
+    volumes:
+      - ${DATA}/nginx/config:/etc/nginx/conf.d
+      - ${DATA}/nginx/logs/:/etc/nginx/logs/
+      - ${DATA}/letsencrypt/archive/jzarzycki.com/:/etc/letsencrypt
+    ports:
+      - 80:80
+      - 443:443
+    networks:
+      - nginx
+
+  # Zero-tier: VPN without port forwarding
+  # https://docs.zerotier.com/
+  zerotier:
+    container_name: zerotier
+    hostname: zerotier
+    image: zerotier/zerotier-synology:latest
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+    devices:
+      - /dev/net/tun
+    volumes:
+      - ${DATA}/zerotier-one:/var/lib/zerotier-one
+    restart: unless-stopped
+
+  # Homer: A fancy homepage for self-hosted services
+  # https://hub.docker.com/r/b4bz/homer
+  homer:
+    image: b4bz/homer:latest
+    container_name: homer
+    volumes:
+      - ${DATA}/homer:/www/assets
+    environment:
+      - INIT_ASSETS=0
+    restart:
+      unless-stopped
+    networks:
+      - nginx
+
+  # Photoprism: AI-Powered Photos App
+  # https://docs.photoprism.app/
+  photoprism:
+    container_name: photoprism
+    hostname: photoprism
+    ## Use photoprism/photoprism:preview for testing preview builds:
+    image: photoprism/photoprism:latest
+    depends_on:
+      - mariadb
+    ## Don't enable automatic restarts until PhotoPrism has been properly configured and tested!
+    ## If the service gets stuck in a restart loop, this points to a memory, filesystem, network, or database issue:
+    ## https://docs.photoprism.app/getting-started/troubleshooting/#fatal-server-errors
+    restart: unless-stopped
+    security_opt:
+      - seccomp:unconfined
+      - apparmor:unconfined
+    environment:
+      - PHOTOPRISM_SITE_URL=http://homelab.jzarzycki.com:2342/  # public server URL incl http:// or https:// and /path, :port is optional
+      - PHOTOPRISM_ORIGINALS_LIMIT=5000               # file size limit for originals in MB (increase for high-res video)
+      - PHOTOPRISM_HTTP_COMPRESSION=gzip              # improves transfer speed and bandwidth utilization (none or gzip)
+      - PHOTOPRISM_DEBUG=false                        # run in debug mode (shows additional log messages)
+      - PHOTOPRISM_PUBLIC=false                       # no authentication required (disables password protection)
+      - PHOTOPRISM_READONLY=false                     # don't modify originals directory (reduced functionality)
+      - PHOTOPRISM_EXPERIMENTAL=false                 # enables experimental features
+      - PHOTOPRISM_DISABLE_CHOWN=false                # disables storage permission updates on startup
+      - PHOTOPRISM_DISABLE_WEBDAV=false               # disables built-in WebDAV server
+      - PHOTOPRISM_DISABLE_SETTINGS=false             # disables Settings in Web UI
+      - PHOTOPRISM_DISABLE_TENSORFLOW=false           # disables all features depending on TensorFlow
+      - PHOTOPRISM_DISABLE_FACES=false                # disables facial recognition
+      - PHOTOPRISM_DISABLE_CLASSIFICATION=false       # disables image classification
+      - PHOTOPRISM_DARKTABLE_PRESETS=false            # enables Darktable presets and disables concurrent RAW conversion
+      - PHOTOPRISM_DETECT_NSFW=false                  # flag photos as private that MAY be offensive (requires TensorFlow)
+      - PHOTOPRISM_UPLOAD_NSFW=true                   # allows uploads that MAY be offensive
+      - PHOTOPRISM_DATABASE_DRIVER=mysql              # use MariaDB 10.5+ or MySQL 8+ instead of SQLite for improved performance
+      - PHOTOPRISM_DATABASE_SERVER=mariadb:3306       # MariaDB or MySQL database server (hostname:port)
+      - PHOTOPRISM_DATABASE_NAME=photoprism           # MariaDB or MySQL database schema name
+      - PHOTOPRISM_DATABASE_USER=photoprism           # MariaDB or MySQL database user name
+      - PHOTOPRISM_DATABASE_PASSWORD=${MYSQL_PASS}    # MariaDB or MySQL database user password
+      - PHOTOPRISM_SITE_TITLE=PhotoPrism
+      - PHOTOPRISM_SITE_CAPTION=AI-Powered Photos App
+      #- PHOTOPRISM_SITE_DESCRIPTION=AI-Powered Photos App
+      - PHOTOPRISM_SITE_AUTHOR=Jan Zarzycki
+      ## Run/install on first startup (options: update, gpu, tensorflow, davfs, nano, clean):
+      #- PHOTOPRISM_INIT=gpu tensorflow
+      ## Hardware video transcoding config (optional)
+      # - PHOTOPRISM_FFMPEG_BUFFERS=64              # FFmpeg capture buffers (default: 32)
+      # - PHOTOPRISM_FFMPEG_BITRATE=32              # FFmpeg encoding bitrate limit in Mbit/s (default: 50)
+      # - PHOTOPRISM_FFMPEG_ENCODER=h264_v4l2m2m    # use Video4Linux for AVC transcoding (default: libx264)
+      # - PHOTOPRISM_FFMPEG_ENCODER=h264_qsv        # use Intel Quick Sync Video for AVC transcoding (default: libx264)
+      ## Run as a specific user, group, or with a custom umask (does not work together with "user:")
+      - PHOTOPRISM_UID=1000
+      - PHOTOPRISM_GID=1000
+      - PHOTOPRISM_UMASK=0000
+      - HOME=/photoprism
+    ## Start as a non-root user (see https://docs.docker.com/engine/reference/run/#user)
+    # - user=1000:1000
+    ## Share hardware devices with FFmpeg and TensorFlow (optional):
+    devices:
+      - "/dev/dri:/dev/dri"
+    working_dir: "/photoprism"
+    ## Storage Folders: "~" is a shortcut for your home directory, "." for the current directory
+    volumes:
+      - "${DATA}/photoprism/originals:/photoprism/originals"     # original media files (photos and videos)
+      - "${DATA}/photoprism/family:/photoprism/originals/family" # *additional* media folders can be mounted like this
+      - "${DATA}/photoprism/import:/photoprism/import"           # *optional* base folder from which files can be imported to originals
+      - "${DATA}/photoprism:/photoprism/storage"                 # *writable* storage folder for cache, database, and sidecar files (never remove)
+    networks:
+      - mariadb
+      - nginx
+
+  # Photoprism: Database
+  mariadb:
+    container_name: mariadb
+    hostname: mariadb
+    ## If MariaDB gets stuck in a restart loop, this points to a memory or filesystem issue:
+    ## https://docs.photoprism.app/getting-started/troubleshooting/#fatal-server-errors
+    restart: unless-stopped
+    image: mariadb:10.6
+    security_opt:
+      - seccomp:unconfined
+      - apparmor:unconfined
+    command: mysqld --innodb-buffer-pool-size=256M --transaction-isolation=READ-COMMITTED --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci --max-connections=512 --innodb-rollback-on-timeout=OFF --innodb-lock-wait-timeout=120
+    ## Never store database files on an unreliable device such as a USB flash drive, an SD card, or a shared network folder:
+    volumes:
+      - "${DATA}/mariadb/:/var/lib/mysql" # important, don't remove
+    environment:
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASS}
+      - MYSQL_DATABASE=photoprism
+      - MYSQL_USER=photoprism
+      - MYSQL_PASSWORD=${MYSQL_PASS}
+    networks:
+      - mariadb
+
+  # Jellyfin  – a self-hosted media server
+  jellyfin:
+    image: jellyfin/jellyfin
+    container_name: jellyfin
+    user: 1000:1000
+    #network_mode: 'host'
+    ports:
+      - 8096:8096
+    devices:
+      - /dev/dri:/dev/dri
+    volumes:
+      - ${DATA}/jellyfin/config:/config
+      - ${DATA}/jellyfin/cache:/cache
+      - ${DATA}/jellyfin/movies:/media
+      - ${DATA}/jellyfin/tv:/media2:ro
+    restart: 'unless-stopped'
+    # Optional - alternative address used for autodiscovery
+    #environment:
+    #  - JELLYFIN_PublishedServerUrl=https://jelllyfin.jzarzycki.com
+    # Optional - may be necessary for docker healthcheck to pass if running in host network mode
+    #extra_hosts:
+    #  - "host.docker.internal:host-gateway"
+    networks:
+      - nginx
+
+  # Bazarr: Subtitles downloader
+  bazarr:
+    image: lscr.io/linuxserver/bazarr
+    container_name: bazarr
+    hostname: bazarr
+    environment:
+      - PUID=${UID}
+      - PGID=${GID}
+      - TZ=${TZ}
+    volumes:
+      - ${DATA}/bazarr:/config
+      - ${DATA}/jellyfin/movies:/movies #optional
+      - ${DATA}/jellyfin/tv:/tv #optional
+    restart: unless-stopped
+    networks:
+      - nginx
+
+  # Prometheus: Monitoring & time series database
+  # https://prometheus.io/docs/introduction/overview
+  prometheus:
+    container_name: prometheus
+    image: prom/prometheus
+    restart: unless-stopped
+    volumes:
+      - ${DATA}/prometheus/:/etc/prometheus/
+      #- ${DATA}/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      #- ${DATA}/prometheus/prometheus.rules.yml:/etc/prometheus/prometheus.rules.yml
+    networks:
+      - monitoring
+      - nginx
+    depends_on:
+      - node-exporter
+
+  # Node Exporter: Exporting metrics about the node
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: node-exporter
+    restart: unless-stopped
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.rootfs=/rootfs'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    networks:
+      - monitoring
+
+  # Grafana: Analytics & monitoring
+  # https://grafana.com/docs/grafana/latest/
+  grafana:
+    container_name: grafana
+    image: grafana/grafana-oss
+    restart: unless-stopped
+    volumes:
+      - ${DATA}/grafana/var_lib_grafana:/var/lib/grafana
+      - ${DATA}/grafana/grafana.ini:/etc/grafana/grafana.ini
+    networks:
+      - monitoring
+      - nginx
+    depends_on:
+      - prometheus
+
+networks:
+  mariadb:
+    name: mariadb
+  monitoring:
+    name: monitoring
+  nginx:
+    name: nginx
